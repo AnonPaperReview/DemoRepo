@@ -1,6 +1,6 @@
 # Demo Repo
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AnonPaperReview/DemoRepo/blob/main/tutorial/colab_version.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AnonPaperReview/DemoRepo/blob/main/tutorial/colab_version.ipynb?flush_cache=true)
 
 IonoBench: Evaluating Spatiotemporal Models for IonosphericForecasting under Solar-Balanced and Storm-Aware Conditions (Under Review)
 
