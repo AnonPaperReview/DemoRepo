@@ -109,7 +109,8 @@ def makeComparison_Anim(
         # Update image data
         im1.set_array(z1.ravel())
         im2.set_array(z2.ravel())
-        cb.update_normal(ims[1])        # <-- keep the colour-bar alive
+        cb.update_normal(ims[1])
+              
         # Calculate metrics if requested
         metrics_text = ""
         if show_metrics:
@@ -139,3 +140,6 @@ def makeComparison_Anim(
     plt.close(fig)  # Close the figure to prevent display in Jupyter
     return anim  
 #############################################################
+
+
+#

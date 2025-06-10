@@ -218,276 +218,6 @@ class TECspatiotemporalLoader(torch.utils.data.Dataset):
         return self.samples
 #===============================================================================
 
-
-''' 
-Old version 
-# ModelTrainer Class
-################################################################################
-class IonoTrainer:
-    def __init__(self, model, train_loader, val_loader, device, config=None):
-        seedME(3)  # Ensure repeatability
-        self.config = config if config is not None else {}
-        # Set flag for mixed precision training (default: False)
-        if self.config.mixedPrecision:
-            self.scaler = torch.amp.GradScaler()
-        else:
-            self.scaler = None
-
-        if is_dist_active(): 
-            self.rank = dist.get_rank()
-            self.world_size = dist.get_world_size()
-        else:
-            self.rank = 0
-            self.world_size = 1
-        
-        if self.rank == 0 and self.config.test.save_results:
-            logging.basicConfig(level=logging.INFO)
-            self.logger = logging.getLogger(__name__)
-            self.sessionDir = self.setup_session_directory()
-            self.checkpoint_pathBest, self.model_final_path = self.setup_paths()
-        
-        self.model = model
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.device = device
-
-        # Initializing lists for tracking losses
-        self.training_losses = []
-        self.validation_losses = []
-        self.early_stopping_counter = 0
-        self.best_val_loss = float('inf')
-        
-    def setup_session_directory(self):
-        if self.rank != 0:
-            return None
-        script_path = Path(__file__).resolve()
-        script_dir = script_path.parent
-
-        # Traverse parent directories to find "IonoBench"
-        iono_bench_path = script_dir
-        while iono_bench_path.name != "IonoBench" and iono_bench_path.parent != iono_bench_path:
-            iono_bench_path = iono_bench_path.parent
-
-        if iono_bench_path.name != "IonoBench":
-            raise ValueError("IonoBench directory not found in script path!")
-
-        # Construct session directory path
-        session_root_dir = iono_bench_path / "training_sessions" / self.config.session.name
-        session_root_dir.mkdir(parents=True, exist_ok=True)  # Create if not exists
-
-        self.logger.info(f"Session folder '{session_root_dir}' created.")
-        return session_root_dir
-
-    def setup_paths(self):
-        """Set up paths for saving model checkpoints."""
-        if self.rank != 0:
-            return None, None
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
-        best_checkpoint_path = self.sessionDir / f"{self.config.session.name}_best_checkpoint_{timestamp}.pth"
-        final_model_path = self.sessionDir / f"{self.config.session.name}_final_model_{timestamp}.pth"
-        return best_checkpoint_path, final_model_path
-
-    def generate_log_filename(self, config):
-        """Generate a readable filename for training log files in .txt format."""
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
-        return f"{config.session.name}_lr{config.lr}_bs{config.batchSize}_{timestamp}.txt"  # Changed to .txt
-
-    def save_training_info(self, sessionDir, config):
-        """Create a text file to store training session information at the start."""
-        if self.rank != 0:
-            return None  # Only rank 0 should create the file
-
-        if not hasattr(self, 'logger'):
-            raise AttributeError("logger is not defined.")
-
-        log_filename = self.generate_log_filename(config)  # Generate .txt filename
-        training_info_file = Path(sessionDir) / log_filename  # Use pathlib for path handling
-        lock_file = training_info_file.with_suffix('.lock')  # Lock file for safe writing
-
-        with FileLock(str(lock_file)):  # Ensures only one process writes at a time
-            with open(training_info_file, 'w') as f:
-                f.write(f"Session: {config.session.name}\n")
-                f.write(f"Start Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-                f.write("Hyperparameters:\n")
-                for key, value in config.to_dict().items():
-                    f.write(f"  {key}: {value}\n")
-                f.write("\nEpoch | Train Loss | Val Loss | LR | Early Stop Count | Timestamp\n")
-                f.write("-------------------------------------------------------------\n")  # Header line
-
-        self.logger.info(f"Training info file created at {training_info_file}")
-        return training_info_file
-
-    def update_training_info(self, training_info_file, epoch, train_loss, val_loss, lr, early_stop_count):
-        """Update the training info file with the current epoch and loss as a single line entry."""
-        if self.rank != 0:
-            return None  # Only rank 0 should write updates
-
-        training_info_file = Path(training_info_file)
-        lock_file = training_info_file.with_suffix('.lock')  # Lock file for safety
-
-        if not training_info_file.exists():
-            raise FileNotFoundError(f"Training info file {training_info_file} not found.")
-
-        log_entry = f"{(epoch+1):>5} | {train_loss:.3e} | {val_loss:.3e} | {lr:.3e} | {early_stop_count:>5} | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-
-        with FileLock(str(lock_file)):  # Ensures only one process writes at a time
-            with open(training_info_file, 'a') as f:
-                f.write(log_entry)
-
-        self.logger.info(f"Updated training info file at {training_info_file} with epoch {epoch}")
-        
-    def resume_training(self, checkpoint_path):
-        """Resume training from a checkpoint."""
-        checkpoint = torch.load(checkpoint_path)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        self.best_val_loss = checkpoint['best_val_loss']
-        self.early_stopping_counter = checkpoint['early_stopping_counter']
-        self.training_losses = checkpoint['training_losses']
-        self.validation_losses = checkpoint['validation_losses']
-
-    def update_scheduler(self, scheduler, metric, epoch):
-        if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(metric)
-        else:
-            scheduler.step(epoch)
-            
-    def train(self):
-        if self.rank == 0 and self.config.test.save_results:
-            self.training_info_file = self.save_training_info(self.sessionDir, self.config)
-        self.early_stop_counter = 0
-
-        for epoch in range(self.config.numEpochs):
-            if hasattr(self.train_loader.sampler, "set_epoch"):
-                self.train_loader.sampler.set_epoch(epoch)
-            if hasattr(self.val_loader.sampler, "set_epoch"):
-                self.val_loader.sampler.set_epoch(epoch)
-            train_loss = self.run_epoch(epoch)
-            val_loss = self.validate(epoch)
-
-            early_stop_flag = torch.tensor([0], device=self.device)
-
-            if self.rank == 0:
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    self.early_stop_counter = 0
-                    if self.config.test.save_results: self.save_checkpoint(epoch)  
-                else:
-                    self.early_stop_counter += 1
-
-                if self.config.test.save_results:
-                    self.update_training_info(self.training_info_file, epoch, train_loss, val_loss, 
-                                            self.config.optimizer.param_groups[0]['lr'], self.early_stop_counter)
-                print(f"Epoch {epoch + 1}/{self.config.numEpochs} | Train Loss: {train_loss:.3e} | "
-                      f"Val Loss: {val_loss:.3e} | LR: {self.config.optimizer.param_groups[0]['lr']:.3e} | "
-                      f"Early Stop Count: {self.early_stop_counter}")
-
-                if self.early_stop_counter >= self.config.earlyStop:
-                    early_stop_flag[0] = 1
-
-            dist.broadcast(early_stop_flag, src=0)
-
-            if early_stop_flag.item() == 1:
-                dist.barrier()
-                if self.rank == 0 and self.config.test.save_results:
-                    print("Early stopping triggered")
-                    torch.save(self.model.state_dict(), self.model_final_path)
-                return {'Training Losses': self.training_losses, 'Validation Losses': self.validation_losses}
-
-        dist.barrier()
-        if self.rank == 0 and self.config.test.save_results:
-            torch.save(self.model.state_dict(), self.model_final_path)
-            
-        return {'Training Losses': self.training_losses, 'Validation Losses': self.validation_losses, 'Session Name': self.config.session.name}
-
-    def run_epoch(self, epoch):
-        """Run a single epoch of training."""
-        self.model.train()
-        total_loss = torch.tensor(0.0).to(self.device)
-        for batch in tqdm(self.train_loader, desc=f'Epoch {epoch + 1}/{self.config.numEpochs}', disable=(self.rank != 0)):
-            inputMaps, truthMaps = batch
-            inputMaps = inputMaps.to(self.device).float()
-            truthMaps = truthMaps.to(self.device).float()
-            self.config.optimizer.zero_grad()
-
-            if self.config.mixedPrecision:
-                with torch.amp.autocast():
-                    _, loss = self.model(inputMaps, truthMaps)
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.config.optimizer)
-                self.scaler.update()
-            else:
-                _, loss = self.model(inputMaps, truthMaps)
-                loss.backward()
-                self.config.optimizer.step()
-
-            total_loss += loss.item()
-
-        dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        avg_train_loss = total_loss.item() / (len(self.train_loader) * self.world_size)
-        if self.rank == 0:
-            self.training_losses.append(avg_train_loss)
-                        
-        return avg_train_loss
-
-    def validate(self, epoch):
-        """Run validation after each epoch."""
-        self.model.eval()
-        total_val_loss = torch.tensor(0.0, device=self.device)
-        with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc=f'Validation Epoch {epoch + 1}/{self.config.numEpochs}', disable=(self.rank != 0)):
-                inputMaps, truthMaps = batch
-                inputMaps = inputMaps.to(self.device).float()
-                truthMaps = truthMaps.to(self.device).float()
-                if self.config.mixedPrecision:
-                    with torch.amp.autocast():
-                        output, _ = self.model(inputMaps, truthMaps)
-                else:
-                    output, _ = self.model(inputMaps, truthMaps)
-                val_loss = self.config.criterion(output, truthMaps)
-                total_val_loss += val_loss.item()
-                
-        dist.all_reduce(total_val_loss, op=dist.ReduceOp.SUM)
-        avg_val_loss = total_val_loss.item() / (len(self.val_loader) * self.world_size)
-        if self.rank == 0:
-            self.validation_losses.append(avg_val_loss)
-            self.update_scheduler(self.config.scheduler, avg_val_loss, epoch + 1)    
-        return avg_val_loss
-
-    def save_checkpoint(self, epoch):
-        """Save the model checkpoint."""
-        if self.rank != 0:
-            return
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.config.optimizer.state_dict(),
-            'scheduler_state_dict': self.config.scheduler.state_dict(),
-            'best_val_loss': self.best_val_loss,
-            'early_stopping_counter': self.early_stop_counter,
-            'training_losses': self.training_losses,
-            'validation_losses': self.validation_losses
-        }, self.checkpoint_pathBest)
-        
-    # Learning Curve
-    def learningCurve_plot(trainDict):
-        go.Figure([
-            go.Scatter(y=trainDict['Training Losses'], x=list(range(1, len(trainDict['Training Losses']) + 1)),
-                    mode='lines+markers', name='Training Loss'),
-            go.Scatter(y=trainDict['Validation Losses'], x=list(range(1, len(trainDict['Validation Losses']) + 1)),
-                    mode='lines+markers', name='Validation Loss')
-        ]).update_layout(
-            title=f"Learning Curve {trainDict['Session Name']}",
-            title_x=0.5,
-            xaxis_title='Epoch',
-            yaxis_title='Loss',
-            template='plotly_dark',
-            hovermode='x'
-        ).show()
-###################################################################
-'''
-
 # ModelTester Class
 ################################################################################  
 class IonoTester:
@@ -525,7 +255,8 @@ class IonoTester:
             'ssim_hor': [[] for _ in range(num_horizons)],
         }
         
-        should_save_raw = self.config.test.save_raw and (self.config.mode == 'test')
+        # should_save_raw = self.config.test.save_raw and (self.config.mode == 'test')
+        should_save_raw = self.config.test.save_raw
         temp_batch_dir = self.sessionDir / "temp_raw_batches"
         if self.rank == 0 and should_save_raw:
             if temp_batch_dir.exists(): shutil.rmtree(temp_batch_dir)
@@ -561,7 +292,7 @@ class IonoTester:
                 shutil.rmtree(temp_batch_dir) # Clean up
 
         return {'Predictions': tec_predictions, 'Labels': tec_labels, 'Metrics': metrics_all}
-
+        
     def _compute_and_append_batch_metrics(self, preds_batch, labels_batch, metric_lists):
         """Computes metrics for a single batch and appends them to the master lists."""
         data_range = self.config.test.max_tec - self.config.test.min_tec
@@ -619,7 +350,7 @@ class IonoTester:
         all_labels = np.zeros(label_shape, dtype=np.float32)
         
         current_pos = 0
-        for path in tqdm(batch_files, desc="Assembling raw data"):
+        for path in tqdm(batch_files, desc="Assembling raw data",disable=not self.verbose):
             with np.load(path) as data:
                 n = data['preds'].shape[0]
                 all_preds[current_pos:current_pos + n] = data['preds']
@@ -628,8 +359,9 @@ class IonoTester:
         
         ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         raw_path = self.sessionDir / f"test_raw_{ts}.npz"
-        np.savez_compressed(raw_path, predictions=all_preds, labels=all_labels)
-        if self.verbose: print(f"Saved reassembled raw data -> {raw_path}")
+        if self.config.mode == 'test':
+            np.savez_compressed(raw_path, predictions=all_preds, labels=all_labels)
+            if self.verbose: print(f"Saved reassembled raw data -> {raw_path}")
         return all_preds, all_labels
 
     def _print_metrics(self, results_dict):
@@ -648,7 +380,7 @@ class IonoTester:
     def save_testing_info(self, testdict):
         """Saves a text log of the testing session results."""
         self.sessionDir.mkdir(parents=True, exist_ok=True)
-        current_time = datetime.datetime.now().strftime('%Y-%m-%d__%H-%M')
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
         info_file = self.sessionDir / f"test_log_{current_time}.txt"
         
         with open(info_file, 'w') as f:
@@ -679,14 +411,6 @@ def get_latest_test_log(session_dir: Path) -> Path:
 # Solar Intensity Analysis
 #===============================================================================
 class SolarAnalysis:
-    """
-    Example
-    -------
-    sa   = SolarAnalysis(model, raw, cfg, device="cuda:0")
-    res  = sa.run()             # dict keyed by intensity tag
-    """
-
-    # loader-key  →  pretty key inside raw["solarClasses"]
     _MAP = {
         "very_weak": "Very Weak",
         "weak":      "Weak",
@@ -697,7 +421,7 @@ class SolarAnalysis:
     def __init__(self,
                  model,
                  raw_dict: dict,
-                 loaders: dict | None = None,  # if None, will be built on-the-fly
+                 loaders: dict | None = None,  # if None, built from factory
                  device: str = "cpu",
                  cfg: dict | None = None,
                  verbose: bool = True):
@@ -736,13 +460,13 @@ class SolarAnalysis:
         self.log: Path | None = None
         if cfg.test.save_results:
             # use last testing_info…txt if it exists, else create a fresh one
-            existing = sorted(self.sdir.glob("testing_info*.txt"),
+            existing = sorted(self.sdir.glob("test_log*.txt"),
                               key=os.path.getmtime)
             if existing:
                 self.log = existing[-1]
             else:
                 ts   = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
-                self.log = self.sdir / f"testing_info_{ts}.txt"
+                self.log = self.sdir / f"test_log{ts}.txt"
                 self.log.touch()
 
     def run(self):
@@ -754,10 +478,8 @@ class SolarAnalysis:
         for tag, loader in self.loaders.items():
             if self.verbose:
                 # Print a clean header for the upcoming test
-                print("\n" + "="*80)
-                print(f"─── Analyzing Solar Class: {tag.upper()} ───")
-                print("="*80)
-
+                print("\n" + "="*20)
+                print(f"Analyzing Solar Class: {tag}")
             res = IonoTester(self.m, loader, self.dev,
                              config=self.cfg, verbose=self.verbose).test()
             results[tag] = res
@@ -767,10 +489,10 @@ class SolarAnalysis:
                 if self.cfg.test.save_results:
                     self._append(fp, tag, res["Metrics"])
                     fp.flush()   
-                if self.cfg.test.save_raw:
+                if self.cfg.test.save_raw and (self.cfg.mode == 'solar'):
                     self._dump_npz(tag, res)
                     raw_files_were_saved = True
-
+            
         if fp is not None:
             fp.close()
             
@@ -807,7 +529,7 @@ class SolarAnalysis:
 
     def _dump_npz(self, tag: str, res: dict):
         ts   = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        npz  = self.sdir / f"test_raw_{tag}_{ts}.npz"
+        npz  = self.solar_out_dir / f"test_raw_{tag}_{ts}.npz"
         dates = self.raw["solarClasses"][self._MAP[tag]]        # class dates
         np.savez_compressed(
             npz,
@@ -869,7 +591,7 @@ class StormAnalysis:
         self.log: Path | None = None
         if self.rank == 0 and cfg.test.save_results:
             # Find the most recent testing_info.txt file
-            existing = sorted(self.sdir.glob("testing_info*.txt"), key=os.path.getmtime)
+            existing = sorted(self.sdir.glob("test_log_*.txt"), key=os.path.getmtime)
             
             if existing:
                 # If a log file exists, use the most recent one
@@ -877,7 +599,7 @@ class StormAnalysis:
             else:
                 # If no log file exists, create a new one with a timestamp
                 ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                self.log = self.sdir / f"testing_info_{ts}.txt"
+                self.log = self.sdir / f"test_log_{ts}.txt"
                 self.log.touch()
                 if self.verbose:
                     print(f"No existing log file found. Created new one: {self.log}")
@@ -922,7 +644,7 @@ class StormAnalysis:
             if self.rank == 0:
                 if self.cfg.test.save_results:
                     self._append_storm_row(fp, storm_idx + 1, storm_result)
-                if self.cfg.test.save_raw:
+                if self.cfg.test.save_raw and self.cfg.mode == 'storm':
                     self._dump_npz(storm_idx + 1, tag, storm_result)
                     raw_files_were_saved = True
         
@@ -940,8 +662,22 @@ class StormAnalysis:
         
         return results
 
+    def _dump_npz(self, storm_idx: int, tag: str, res: dict):
+        """Saves raw predictions and labels for a single storm to a .npz file."""
+        # Use the tag for a robust filename, replacing 'storm_X_' prefix
+        filename_tag = tag.replace(f"storm_{storm_idx-1}_", "") 
+        npz_path = self.storm_out_dir / f"test_raw_storm_{storm_idx}_{filename_tag}.npz"
+        
+        np.savez_compressed(
+            npz_path,
+            full_period_predictions=res['FullPeriod']['Predictions'],
+            full_period_labels=res['FullPeriod']['Labels'],
+            # main_phase_predictions=res['MainPhase']['Predictions'],
+            # main_phase_labels=res['MainPhase']['Labels'],
+            storm_metadata=res['Meta']
+        )
+        
     def _append_header(self, fp):
-        """Appends the main results table header to the log file."""
         fp.write("\n\n\nStorm Analysis Results\n")
         header = (
             f"{'='*150}\n"
@@ -953,12 +689,10 @@ class StormAnalysis:
         fp.write(header)
 
     def _append_storm_row(self, fp, storm_idx: int, res: dict):
-        """Appends a single formatted row for one storm to the log file."""
         meta = res['Meta']
         full_m = res['FullPeriod']['Metrics']['overall']
         main_m = res['MainPhase']['Metrics']['overall']
         
-        # Helper to format metric string
         def fmt(m):
             return (f"{m['RMSE(TECU)']:.2f} ± {m['RMSE_std']:.2f} / "
                     f"{m['R²']:.2f} ± {m['R²_std']:.2f} / "
@@ -972,7 +706,6 @@ class StormAnalysis:
         fp.write(log_line)
 
     def _append_per_horizon_summary(self, fp, all_results: dict):
-        """Appends the detailed per-horizon metrics for all storms."""
         fp.write("\n\n======================== Per-Horizon Breakdown ========================\n")
 
         def _format_block(ph_dict, label):
@@ -982,28 +715,13 @@ class StormAnalysis:
                 lines.append(f"  {key+'_std':<9}: [" + ", ".join(f"{v:.4f}" for v in ph_dict[key+'_std']) + "]")
             return "\n".join(lines)
 
-        for i, storm_res in all_results.items():
+        for tag, storm_res in all_results.items():
+            storm_idx = int(tag.split('_')[1])
             meta = storm_res['Meta']
-            fp.write(f"\n\nStorm {i+1}: {meta['Storm Date'].strftime('%Y-%m-%d')} (Dst: {meta['Storm Dst']:.1f} nT)")
+            fp.write(f"\n\nStorm {storm_idx+1}: {meta['Storm Date'].strftime('%Y-%m-%d')} (Dst: {meta['Storm Dst']:.1f} nT)")
             fp.write(_format_block(storm_res['FullPeriod']['Metrics']['perHorizon'], "Full Period"))
             fp.write(_format_block(storm_res['MainPhase']['Metrics']['perHorizon'], "Main Phase"))
         
         fp.write("\n" + "="*80 + "\n")
-
-    def _dump_npz(self, storm_idx: int, tag: str, res: dict):
-        """Saves raw predictions and labels for a single storm to a .npz file."""
-        # Use the tag for a robust filename, replacing 'storm_X_' prefix
-        filename_tag = tag.replace(f"storm_{storm_idx-1}_", "") 
-        npz_path = self.storm_out_dir / f"test_raw_storm_{storm_idx}_{filename_tag}.npz"
-        
-        np.savez_compressed(
-            npz_path,
-            full_period_predictions=res['FullPeriod']['Predictions'],
-            full_period_labels=res['FullPeriod']['Labels'],
-            main_phase_predictions=res['MainPhase']['Predictions'],
-            main_phase_labels=res['MainPhase']['Labels'],
-            storm_metadata=res['Meta']
-        )
-    
 #===============================================================================      
 
