@@ -1004,52 +1004,6 @@ class StormAnalysis:
             main_phase_labels=res['MainPhase']['Labels'],
             storm_metadata=res['Meta']
         )
-        
-    def _append_header(self, fp):
-        fp.write("\n\n\nStorm Analysis Results\n")
-        header = (
-            f"{'='*150}\n"
-            f"{'Storm':<7} {'Date':<18} {'Dst(nT)':<8} "
-            f"{'Full Period (RMSE / R² / SSIM)':<45} "
-            f"{'Main Phase (RMSE / R² / SSIM)'}\n"
-            f"{'-'*150}\n"
-        )
-        fp.write(header)
-
-    def _append_storm_row(self, fp, storm_idx: int, res: dict):
-        meta = res['Meta']
-        full_m = res['FullPeriod']['Metrics']['overall']
-        main_m = res['MainPhase']['Metrics']['overall']
-        
-        def fmt(m):
-            return (f"{m['RMSE(TECU)']:.2f} ± {m['RMSE_std']:.2f} / "
-                    f"{m['R²']:.2f} ± {m['R²_std']:.2f} / "
-                    f"{m['SSIM']:.2f} ± {m['SSIM_std']:.2f}")
-
-        log_line = (
-            f"{storm_idx:<7} {meta['Storm Date'].strftime('%Y-%m-%d %H:%M'):<18} {meta['Storm Dst']:<8.1f} "
-            f"{fmt(full_m):<45} "
-            f"{fmt(main_m)}\n"
-        )
-        fp.write(log_line)
-
-    def _append_per_horizon_summary(self, fp, all_results: dict):
-        fp.write("\n\n======================== Per-Horizon Breakdown ========================\n")
-
-        def _format_block(ph_dict, label):
-            lines = [f"\n  ── {label} Per-Horizon Metrics ──"]
-            for key in ['RMSE', 'R²', 'SSIM']:
-                lines.append(f"  {key:<9}: [" + ", ".join(f"{v:.4f}" for v in ph_dict[key]) + "]")
-                lines.append(f"  {key+'_std':<9}: [" + ", ".join(f"{v:.4f}" for v in ph_dict[key+'_std']) + "]")
-            return "\n".join(lines)
-
-        for tag, storm_res in all_results.items():
-            storm_idx = int(tag.split('_')[1])
-            meta = storm_res['Meta']
-            fp.write(f"\n\nStorm {storm_idx+1}: {meta['Storm Date'].strftime('%Y-%m-%d')} (Dst: {meta['Storm Dst']:.1f} nT)")
-            fp.write(_format_block(storm_res['FullPeriod']['Metrics']['perHorizon'], "Full Period"))
-            fp.write(_format_block(storm_res['MainPhase']['Metrics']['perHorizon'], "Main Phase"))
-        
-        fp.write("\n" + "="*80 + "\n")
+    
 #===============================================================================      
 

@@ -9,3 +9,6 @@ plotly
 huggingface-hub
 filelock
 scikit-image
+matplotlib
+ipython
+cartopy
