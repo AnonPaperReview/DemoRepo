@@ -424,3 +424,10 @@ def download_model_folder(model_name, base_path=None):
             print(f"{fname} already exists. Skipping.")
     print(f"Please check the {target_path} folder for the downloaded files.")
 ##############################################################################################################
+
+###############################################################################################################
+def getOMNIfeature(dataDict, feature_name):
+    dataDict['OMNI_index'] = {name: i for i, name in enumerate(dataDict['OMNI_names'])}
+    idx = dataDict['OMNI_index'][feature_name]
+    return dataDict['normOMNI'][:, idx]
+###############################################################################################################
