@@ -22,6 +22,7 @@ def _load_yaml(path: Path) -> DictConfig:
 
 def load_configs(model: str = "SimVPv2",
                  mode:  str = "train",
+                 split: str = "stratified",         # or "chronological"
                  base_path: Path | str = None,
                  cli_overrides: Dict[str, Union[str, int, float, bool]] | None = None,
                  as_dict: bool = False) -> Union[DictConfig, Dict]:
@@ -34,7 +35,8 @@ def load_configs(model: str = "SimVPv2",
     mode_cfg   = _load_yaml(cfg_dir / "modes"  / f"{mode}.yaml")
 
     merged = OmegaConf.merge(base_cfg, model_cfg, mode_cfg)
-    merged.paths.base_dir = base_path 
+    merged.paths.base_dir = base_path
+    merged.data.data_split = split  
     # Apply CLI / programmatic overrides (optional)
     if cli_overrides:
         merged = OmegaConf.merge(merged, OmegaConf.create(cli_overrides))
@@ -48,5 +50,3 @@ def load_configs(model: str = "SimVPv2",
                 merged.model.total_T = int(seq_len) + int(pred_horz)
     except Exception as e:
         print(f"Warning: Could not auto-calculate total_T: {e}")
-
-    return OmegaConf.to_container(merged, resolve=True) if as_dict else merged

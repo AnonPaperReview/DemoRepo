@@ -17,9 +17,9 @@ import pickle
 import torch.distributed as dist  # Added to check rank for DDP
 from torch.utils.data import DataLoader
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List,Any
 from source.myTrainFuns import TECspatiotemporalLoader
-from datetime import timedelta
+from datetime import datetime,timedelta
 #========================================================================
 
 # ---- registry so you can plug new experiment loaders later -------------
@@ -85,7 +85,7 @@ def load_training_data(seq_len=12, pred_horz=12, datasplit='stratifiedSplit', ve
         [dates, normTEC, normOMNI, OMNI_names, dataSplit_Dates, stormInfo, maxTEC, minTEC] = trainingData.values()
         print("Training data loaded successfully.")
     except FileNotFoundError as e:
-        print(f"Error loading training data: {e}")
+        print(f"Error loading training data: {e}\n Please ensure the dataset exists at {training_data_file}.")
         return None
     
     # Map feature names to indices
@@ -178,6 +178,7 @@ def prepare_raw(cfg) -> Dict:
 
 # Dataloaders for default train/valid/test splits
 #========================================================================
+@register_exp("default")
 def make_default_loaders(cfg, d) -> Dict[str, DataLoader]:
     """train / valid / test – the usual."""
     T = cfg.data.seq_len
@@ -200,6 +201,7 @@ def make_default_loaders(cfg, d) -> Dict[str, DataLoader]:
 
 # Dataloaders for testing by solar-activity class (Very-Weak / Weak / Moderate / Intense)
 #========================================================================
+@register_exp("solar")
 def make_solar_loaders(cfg, base_path, d) -> Dict[str, DataLoader]:
     """
     Returns one DataLoader per solar-activity class, using the batch-size
@@ -246,6 +248,7 @@ def make_solar_loaders(cfg, base_path, d) -> Dict[str, DataLoader]:
 
 # Dataloaders for geomagnetic storm analysis 
 #=========================================================================
+@register_exp("storm")
 def make_storm_loaders(cfg: dict, d: dict) -> dict:
     """
     Identifies geomagnetic storms in the test set and creates a dictionary
@@ -316,4 +319,67 @@ def make_storm_loaders(cfg: dict, d: dict) -> dict:
         }
 
     return storm_loaders
+#=========================================================================
+
+# Dataloaders for C1PG comparison periods
+#=========================================================================
+@register_exp("c1pg_comparison")
+def make_c1pg_loaders(cfg: Any, d: Dict) -> Dict[str, DataLoader]:
+    # ... (Paste the full make_c1pg_loaders function from Section 1 here)
+    """
+    Creates DataLoaders for specific C1PG comparison periods, which include
+    solar descending, low activity, and high activity phases.
+
+    Args:
+        cfg: The main configuration object.
+        d: The dictionary returned by prepare_raw() containing the full dataset.
+
+    Returns:
+        A dictionary of DataLoaders for each C1PG comparison period.
+    """
+    is_main_proc = not dist.is_initialized() or dist.get_rank() == 0
+    if is_main_proc:
+        print("Preparing DataLoaders for C1PG comparison periods...")
+    
+    def generate_date_range(start, end, step):
+        dates = []
+        current = start
+        while current <= end:
+            dates.append(current)
+            current += step
+        return dates
+
+    c1pg_periods = {
+        "solar_descend": generate_date_range(datetime(2015, 11, 1), datetime(2017, 9, 5, 22), timedelta(hours=2)),
+        "low_activity": generate_date_range(datetime(2019, 1, 1), datetime(2020, 9, 28, 22), timedelta(hours=2)),
+        "high_activity": generate_date_range(datetime(2023, 9, 30), datetime(2024, 9, 8, 22), timedelta(hours=2)),
+    }
+
+    missing_day = datetime(2019, 6, 16).date()
+    c1pg_periods["low_activity"] = [dt for dt in c1pg_periods["low_activity"] if dt.date() != missing_day]
+    
+    T = cfg.data.seq_len
+    pred_horz = cfg.data.pred_horz
+    B = cfg.test.batch_size
+    
+    def _make_loader(date_list: List[datetime], name: str):
+        available_dates = set(d["dates"])
+        valid_dates = [date for date in date_list if date in available_dates]
+        
+        if not valid_dates and is_main_proc:
+            print(f"Warning: No data available in the main dataset for C1PG period '{name}'.")
+            return None
+
+        dataset = TECspatiotemporalLoader(d["normTEC"], d["normOMNI"], valid_dates, d["dates"], T, pred_horz)
+        return DataLoader(dataset, batch_size=B, shuffle=False)
+
+    loaders = {
+        name: loader 
+        for name, dates in c1pg_periods.items() 
+        if (loader := _make_loader(dates, name)) is not None
+    }
+    
+    if is_main_proc:
+        print(f"Created {len(loaders)} C1PG comparison loaders: {list(loaders.keys())}")
+    return loaders
 #=========================================================================
