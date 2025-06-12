@@ -50,3 +50,5 @@ def load_configs(model: str = "SimVPv2",
                 merged.model.total_T = int(seq_len) + int(pred_horz)
     except Exception as e:
         print(f"Warning: Could not auto-calculate total_T: {e}")
+
+    return OmegaConf.to_container(merged, resolve=True) if as_dict else merged
